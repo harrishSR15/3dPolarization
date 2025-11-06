@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nicol Prism Interactive</title>
+<style>
+  :root{
+    --panel-bg: #0f1724;
+    --accent: #0ea5e9;
+    --muted: #93c5fd;
+    --card: #0b1220;
+    --glass: rgba(255,255,255,0.04);
+  }
+  html,body{height:100%;margin:0;font-family:Inter,Segoe UI,Roboto,Arial,sans-serif;background:linear-gradient(180deg,#071226,#041021);color:#e6f0fb}
+  .app{display:flex;gap:18px;height:100%;padding:18px;box-sizing:border-box;}
+  .canvas-wrap{flex:1;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);border-radius:10px;padding:12px;box-shadow:0 6px 24px rgba(0,0,0,0.6);position:relative}
+  #simCanvas{width:100%;height:100%;display:block;border-radius:6px;background:linear-gradient(180deg,#071226,#021018)}
+  .panel{width:360px;min-width:300px;background:var(--panel-bg);border-radius:10px;padding:16px;box-shadow:0 6px 24px rgba(0,0,0,0.6);overflow:auto}
+  h2{margin:0 0 8px 0;font-size:16px;color:var(--muted)}
+  label{display:block;font-size:13px;margin-top:12px;color:#bcd7ff}
+  .range-row{display:flex;align-items:center;gap:8px}
+  .range-row input[type=range]{flex:1}
+  .small{font-size:12px;color:#9fb8e6}
+  .button-row{margin-top:12px;display:flex;gap:8px}
+  button{background:var(--accent);border:none;color:#04202a;padding:8px 10px;border-radius:8px;cursor:pointer;font-weight:600}
+  .muted-btn{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted)}
+  .info{margin-top:14px;font-size:13px;color:#9fb8e6;line-height:1.45}
+  .val{float:right;color:var(--muted);font-weight:600}
+  .footer{font-size:12px;color:#7f9fcf;margin-top:12px}
+  .credit{font-size:11px;color:#6f8db8;margin-top:10px}
+  /* small helpful overlay */
+  .overlay {position:absolute; left:8px; top:8px; padding:6px 8px; background:var(--glass); border-radius:6px; color:#9fb8e6; font-size:13px}
+</style>
+</head>
+<body>
+  <div class="app">
+    <div class="canvas-wrap">
+      <div class="overlay">Drag the blue source dot to move beam origin</div>
+      <canvas id="simCanvas"></canvas>
+    </div>
+
+    <div class="panel">
+      <h2>Nicol prism interactive</h2>
+
+      <div class="small">Drag the source dot on the left to change the incoming beam. Use sliders to change angle, polarization, wavelength, and birefringence.</div>
+
+      <label>Incoming angle (deg): <span class="val" id="incAngleVal">0</span>
+        <div class="range-row"><input id="incAngle" type="range" min="-60" max="60" value="0"></div>
+      </label>
+
+      <label>Polarization angle (deg): <span class="val" id="polVal">0</span>
+        <div class="range-row"><input id="polAngle" type="range" min="0" max="180" value="0"></div>
+      </label>
+
+      <label>Wavelength (nm): <span class="val" id="wlVal">550</span>
+        <div class="range-row"><input id="wavelength" type="range" min="380" max="780" value="550"></div>
+      </label>
+
+      <label>Birefringence Δn (n_o - n_e): <span class="val" id="dnVal">0.17</span>
+        <div class="range-row"><input id="dn" type="range" min="0.0" max="0.3" step="0.01" value="0.17"></div>
+      </label>
+
+      <label>Prism apex angle (deg): <span class="val" id="apexVal">68</span>
+        <div class="range-row"><input id="apex" type="range" min="20" max="85" value="68"></div>
+      </label>
+
+      <div class="button-row">
+        <button id="toggleMulti">Toggle multiple rays</button>
+        <button class="muted-btn" id="resetBtn">Reset</button>
+      </div>
+
+      <div class="info" id="readout">
+        <strong>Readout:</strong>
+        <div id="readText">Ordinary &amp; extraordinary rays computed using simplified geometric model.</div>
+      </div>
+
+      <div class="credit">Notes: Simplified geometric optics demo of Nicol prism using birefringence to separate ordinary (o) and extraordinary (e) rays. Real crystals are anisotropic — this uses two refractive indices and Snell refraction to show separation.</div>
+    </div>
+  </div>
+
+<script>
+/*
+Nicol prism interactive
+- Single-file demo (canvas)
+- Simplified model:
+  * Prism is an isosceles triangular prism with apex angle A, index n_o for ordinary ray,
+    and n_e = n_o - Δn for extraordinary ray.
+  * Incoming beam represented as a small bundle of rays (toggle multiple rays).
+  * Polarization angle φ sets power split: I_o = cos²φ, I_e = sin²φ (simplified).
+  * Each ray is traced: intersect face, refract into prism using Snell, propagate to exit face,
+    refract back to air using Snell (with respective index).
+  * Colors approximated using wavelength->RGB conversion.
+*/
+
+const canvas = document.getElementById('simCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+function resizeCanvas(){
+  canvas.width = canvas.clientWidth;
+  canvas.height = canvas.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas, {passive:true});
+resizeCanvas();
+
+// UI elements
+const incAngle = document.getElementById('incAngle');
+const polAngle = document.getElementById('polAngle');
+const wavelength = document.getElementById('wavelength');
+const dn = document.getElementById('dn');
+const apex = document.getElementById('apex');
+const toggleMulti = document.getElementById('toggleMulti');
+const resetBtn = document.getElementById('resetBtn');
+
+const incAngleVal = document.getElementById('incAngleVal');
+const polVal = document.getElementById('polVal');
+const wlVal = document.getElementById('wlVal');
+const dnVal = document.getElementById('dnVal');
+const apexVal = document.getElementById('apexVal');
+const readText = document.getElementById('readText');
+
+let multiRays = false;
+let dragging = false;
+
+// default parameters
+let params = {
+  incDeg: parseFloat(incAngle.value),
+  polDeg: parseFloat(polAngle.value),
+  wl: parseFloat(wavelength.value),
+  deltaN: parseFloat(dn.value),
+  apexDeg: parseFloat(apex.value),
+};
+
+// beam origin (draggable)
+let origin = { x: 80, y: canvas.height/2 };
+
+// prism geometry constants (positioned near middle-right)
+function prismGeometry(){
+  const A = params.apexDeg * Math.PI/180;
+  const centerX = canvas.width * 0.6;
+  const centerY = canvas.height/2;
+  const prismHeight = Math.min(canvas.height*0.35, 260);
+  // isosceles with base horizontal: apex pointing left
+  const halfBase = prismHeight * Math.tan(A/2);
+  // three points: apex (left), top, bottom
+  const apexPt = { x: centerX - prismHeight/2, y: centerY };
+  const top = { x: centerX + prismHeight/2, y: centerY - halfBase };
+  const bottom = { x: centerX + prismHeight/2, y: centerY + halfBase };
+  return { apexPt, top, bottom, centerX, centerY };
+}
+
+// simple wavelength -> RGB approximate (not color-accurate, but illustrative)
+function wavelengthToRGB(w) {
+  let r=0,g=0,b=0;
+  if (w >= 380 && w < 440) { r = -(w-440)/(440-380); g=0; b=1; }
+  else if (w >= 440 && w < 490) { r=0; g=(w-440)/(490-440); b=1; }
+  else if (w >= 490 && w < 510) { r=0; g=1; b=-(w-510)/(510-490); }
+  else if (w >= 510 && w < 580) { r=(w-510)/(580-510); g=1; b=0; }
+  else if (w >= 580 && w < 645) { r=1; g=-(w-645)/(645-580); b=0; }
+  else if (w >= 645 && w <= 780) { r=1; g=0; b=0; }
+  // intensity correction near edges
+  let factor = 1.0;
+  if (w < 420) factor = 0.3 + 0.7*(w-380)/(420-380);
+  if (w > 700) factor = 0.3 + 0.7*(780-w)/(780-700);
+  r = Math.max(0, Math.min(1, r*factor));
+  g = Math.max(0, Math.min(1, g*factor));
+  b = Math.max(0, Math.min(1, b*factor));
+  return { r: Math.round(r*255), g: Math.round(g*255), b: Math.round(b*255) };
+}
+
+function drawPrism(ctx, geom) {
+  ctx.save();
+  ctx.fillStyle = 'rgba(12,22,35,0.9)';
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(geom.apexPt.x, geom.apexPt.y);
+  ctx.lineTo(geom.top.x, geom.top.y);
+  ctx.lineTo(geom.bottom.x, geom.bottom.y);
+  ctx.closePath();
+  // subtle gradient fill
+  const g = ctx.createLinearGradient(geom.apexPt.x,0, geom.top.x,0);
+  g.addColorStop(0, 'rgba(35,60,80,0.95)');
+  g.addColorStop(1, 'rgba(16,28,38,0.95)');
+  ctx.fillStyle = g;
+  ctx.fill();
+  ctx.stroke();
+  ctx.restore();
+}
+
+// vector utils
+function dot(a,b){return a.x*b.x+a.y*b.y;}
+function sub(a,b){return {x:a.x-b.x,y:a.y-b.y};}
+function add(a,b){return {x:a.x+b.x,y:a.y+b.y};}
+function mul(a,s){return {x:a.x*s,y:a.y*s};}
+function len(v){return Math.hypot(v.x,v.y);}
+function norm(v){const L=len(v); return L?{x:v.x/L,y:v.y/L}:{x:0,y:0};}
+function perp(v){return {x:-v.y,y:v.x};}
+
+// line intersection parametric: p + t*r intersects q + u*s, returns t (or null)
+function lineIntersect(p,r,q,s){
+  const rxs = r.x*s.y - r.y*s.x;
+  if (Math.abs(rxs) < 1e-6) return null;
+  const qp = {x:q.x-p.x,y:q.y-p.y};
+  const t = (qp.x * s.y - qp.y * s.x)/rxs;
+  const u = (qp.x * r.y - qp.y * r.x)/rxs;
+  return { t, u };
+}
+
+// refract vector using Snell's law (2D): n1*sin(theta1)=n2*sin(theta2).
+// v is incident direction (normalized), n is surface normal (pointing out of surface to incident medium).
+// returns {refractedVector, totalInternalReflection(boolean)}
+function refract(v, normal, n1, n2) {
+  // ensure normal is normalized
+  const nn = norm(normal);
+  const cosi = Math.max(-1, Math.min(1, dot(v, nn) * -1)); // angle between v and normal
+  const eta = n1 / n2;
+  const k = 1 - eta*eta*(1 - cosi*cosi);
+  if (k < 0) return {tir: true}; // total internal reflection
+  const refr = add( mul(v, eta), mul(nn, (eta * cosi - Math.sqrt(k))) );
+  return {v: norm(refr), tir: false};
+}
+
+// trace single ray: returns array of path segments in air (outside) and inside prism for both o and e
+function traceRay(origin, dir, geom, n_air, n_prism) {
+  // faces: face1 from apex->top (front face), face2 top->bottom (back face), face3 bottom->apex (unused)
+  const pA = geom.apexPt, pT = geom.top, pB = geom.bottom;
+  const faces = [
+    {a:pA, b:pT},
+    {a:pT, b:pB},
+    {a:pB, b:pA}
+  ];
+  // We'll intersect with face1 (enter) and face2 (exit through base) — for a left-pointing apex geometry
+  // compute ray-line intersection with segment pA->pT and pT->pB, choose first intersection where t>0 and u in [0,1]
+  const r = dir;
+  let entry = null;
+  for (let f of faces) {
+    const s = {x:f.b.x-f.a.x, y:f.b.y-f.a.y};
+    const inter = lineIntersect(origin, r, f.a, s);
+    if (!inter) continue;
+    if (inter.t > 1e-4 && inter.u >= 0 && inter.u <= 1) {
+      // pick closest t
+      if (!entry || inter.t < entry.t) entry = {face:f, t:inter.t, u:inter.u};
+    }
+  }
+  if (!entry) return {entered:false};
+
+  const pEnter = add(origin, mul(r, entry.t));
+  // compute normal for that face (pointing outwards towards incident medium)
+  // face vector
+  const fv = sub(entry.face.b, entry.face.a);
+  const faceNormal = norm(perp(fv)); // perp gives one normal; choose direction pointing left-of-face; ensure it points to air side
+  // ensure normal points to incident side (towards origin)
+  if (dot(faceNormal, sub(origin, pEnter)) < 0) {
+    faceNormal.x *= -1; faceNormal.y *= -1;
+  }
+
+  // refract into prism
+  const refr = refract(r, faceNormal, n_air, n_prism);
+  if (refr.tir) {
+    return {entered:true, pEnter, tir:true, faceNormal};
+  }
+  const dirInside = refr.v;
+
+  // now find intersection with other face (exit). We'll intersect parametric line pEnter + s*dirInside with other two segments
+  let exit = null;
+  for (let f of faces) {
+    // skip entry face
+    if (f.a.x === entry.face.a.x && f.a.y === entry.face.a.y && f.b.x === entry.face.b.x && f.b.y === entry.face.b.y) continue;
+    const s = {x:f.b.x-f.a.x, y:f.b.y-f.a.y};
+    const inter = lineIntersect(pEnter, dirInside, f.a, s);
+    if (!inter) continue;
+    if (inter.t > 1e-4 && inter.u >= 0 && inter.u <= 1) {
+      if (!exit || inter.t < exit.t) exit = {face:f, t:inter.t, u:inter.u};
+    }
+  }
+  if (!exit) {
+    return {entered:true, pEnter, insideDir:dirInside, exit:false};
+  }
+  const pExit = add(pEnter, mul(dirInside, exit.t));
+  // normal at exit face (pointing out of prism to air)
+  let exitNormal = norm(perp(sub(exit.face.b, exit.face.a)));
+  if (dot(exitNormal, dirInside) > 0) { // if pointing same side as dirInside, flip
+    exitNormal.x *= -1; exitNormal.y *= -1;
+  }
+  // refract to air
+  const refr2 = refract(dirInside, exitNormal, n_prism, n_air);
+  if (refr2.tir) {
+    return {entered:true, pEnter, pExit, tirExit:true};
+  }
+  const outDir = refr2.v;
+  return {entered:true, pEnter, pExit, outDir, faceEntry:entry.face, faceExit:exit.face};
+}
+
+// UI update and display
+function updateParamsFromUI(){
+  params.incDeg = parseFloat(incAngle.value);
+  params.polDeg = parseFloat(polAngle.value);
+  params.wl = parseFloat(wavelength.value);
+  params.deltaN = parseFloat(dn.value);
+  params.apexDeg = parseFloat(apex.value);
+
+  incAngleVal.textContent = params.incDeg.toFixed(0);
+  polVal.textContent = params.polDeg.toFixed(0);
+  wlVal.textContent = params.wl.toFixed(0);
+  dnVal.textContent = params.deltaN.toFixed(2);
+  apexVal.textContent = params.apexDeg.toFixed(0);
+
+  readText.innerText = `Polarization ${params.polDeg}°, Δn=${params.deltaN.toFixed(2)}, apex ${params.apexDeg}°`;
+}
+
+incAngle.addEventListener('input', ()=>{ updateParamsFromUI(); });
+polAngle.addEventListener('input', ()=>{ updateParamsFromUI(); });
+wavelength.addEventListener('input', ()=>{ updateParamsFromUI(); });
+dn.addEventListener('input', ()=>{ updateParamsFromUI(); });
+apex.addEventListener('input', ()=>{ updateParamsFromUI(); });
+
+toggleMulti.addEventListener('click', ()=>{
+  multiRays = !multiRays;
+  toggleMulti.textContent = multiRays ? 'Multiple rays: ON' : 'Toggle multiple rays';
+});
+resetBtn.addEventListener('click', ()=>{
+  incAngle.value = 0; polAngle.value = 0; wavelength.value = 550; dn.value = 0.17; apex.value = 68;
+  origin.x = 80; origin.y = canvas.height/2;
+  updateParamsFromUI();
+});
+
+updateParamsFromUI();
+
+// dragging source dot
+canvas.addEventListener('pointerdown', (e)=>{
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX - r.left;
+  const y = e.clientY - r.top;
+  // check if near origin
+  if (Math.hypot(x-origin.x, y-origin.y) < 14) {
+    dragging = true;
+  }
+});
+window.addEventListener('pointerup', ()=>dragging=false);
+window.addEventListener('pointermove', (e)=>{
+  if (!dragging) return;
+  const r = canvas.getBoundingClientRect();
+  origin.x = Math.max(20, Math.min(canvas.width*0.35, e.clientX - r.left));
+  origin.y = Math.max(20, Math.min(canvas.height-20, e.clientY - r.top));
+});
+
+// main draw
+function draw(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  // background grid subtle
+  ctx.save();
+  ctx.fillStyle = '#021018';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  // left vignette
+  const vg = ctx.createLinearGradient(0,0,canvas.width,0);
+  vg.addColorStop(0,'rgba(6,16,26,0.08)');
+  vg.addColorStop(1,'rgba(6,16,26,0.0)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.restore();
+
+  // recompute geometry with current params
+  const geom = prismGeometry();
+
+  // draw prism
+  drawPrism(ctx, geom);
+
+  // draw axis lines for prism faces (for debugging)
+  // draw the source origin
+  ctx.beginPath();
+  ctx.fillStyle = '#2fb1ff';
+  ctx.strokeStyle = '#9be8ff';
+  ctx.lineWidth = 2;
+  ctx.arc(origin.x, origin.y, 8, 0, Math.PI*2);
+  ctx.fill();
+  ctx.stroke();
+
+  // draw small label
+  ctx.fillStyle = '#bfe9ff';
+  ctx.font = '12px Inter, Arial';
+  ctx.fillText('Source', origin.x+12, origin.y-10);
+
+  // incoming beam direction (base direction from incoming angle slider + toward prism center)
+  const incRad = params.incDeg * Math.PI/180;
+  // direction vector pointing towards right (positive x)
+  let baseDir = { x: Math.cos(incRad), y: Math.sin(incRad) };
+  // if user drags source, we want beam to aim at prism center slightly, so blend toward center direction
+  const toCenter = norm({ x: geom.centerX - origin.x, y: geom.centerY - origin.y });
+  // blend factor small so slider matters
+  baseDir = norm(add(mul(baseDir, 0.6), mul(toCenter, 0.4)));
+
+  // create bundle of rays
+  const rays = [];
+  if (multiRays) {
+    const spread = 8;
+    for (let i=-2;i<=2;i++){
+      rays.push({dir: norm(add(baseDir, mul(perp(baseDir), i*0.02))), weight: 1});
+    }
+  } else {
+    rays.push({dir: baseDir, weight: 1});
+  }
+
+  // polarization splitting factors (simplified)
+  const polRad = params.polDeg * Math.PI/180;
+  const I_o = Math.cos(polRad) ** 2;
+  const I_e = Math.sin(polRad) ** 2;
+
+  // refractive indices: choose base n_o dependent on wavelength (very simplified dispersion)
+  // approximate glass n(λ) ~ 1.55 + 0.02*(500 - λ)/500   (not physically accurate, just variation)
+  const n_o = 1.55 + 0.02 * (500 - params.wl)/500;
+  const n_e = n_o - params.deltaN;
+  const n_air = 1.0;
+
+  // draw rays
+  for (let r of rays){
+    // ordinary ray (o)
+    const traceO = traceRay(origin, r.dir, geom, n_air, n_o);
+    // extraordinary ray (e)
+    const traceE = traceRay(origin, r.dir, geom, n_air, n_e);
+
+    // draw incoming segment until entry or across canvas
+    ctx.strokeStyle = 'rgba(180,200,255,0.4)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(origin.x, origin.y);
+    // pick min t among entry points
+    let entryPt = null;
+    if (traceO.entered && traceO.pEnter) entryPt = traceO.pEnter;
+    else if (traceE.entered && traceE.pEnter) entryPt = traceE.pEnter;
+    if (entryPt) {
+      const mid = entryPt;
+      ctx.lineTo(mid.x, mid.y);
+    } else {
+      ctx.lineTo(origin.x + r.dir.x*1000, origin.y + r.dir.y*1000);
+    }
+    ctx.stroke();
+
+    // draw ordinary outgoing if exists
+    if (traceO.entered && traceO.outDir && traceO.pExit) {
+      // color based on wavelength
+      const rgb = wavelengthToRGB(params.wl);
+      // intensity scaled by polarization factor
+      const alpha = 0.7 * I_o;
+      ctx.strokeStyle = `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(traceO.pExit.x, traceO.pExit.y);
+      // extend a line in outDir
+      ctx.lineTo(traceO.pExit.x + traceO.outDir.x*800, traceO.pExit.y + traceO.outDir.y*800);
+      ctx.stroke();
+
+      // draw dashed inside path for visibility (entry->exit)
+      ctx.setLineDash([6,6]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath();
+      ctx.moveTo(traceO.pEnter.x, traceO.pEnter.y);
+      ctx.lineTo(traceO.pExit.x, traceO.pExit.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (traceO.entered && traceO.tir) {
+      // indicate TIR inside
+      ctx.fillStyle = 'rgba(255,120,80,0.08)';
+      ctx.beginPath();
+      ctx.arc(traceO.pEnter.x, traceO.pEnter.y, 24, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // draw extraordinary outgoing
+    if (traceE.entered && traceE.outDir && traceE.pExit) {
+      const rgb = wavelengthToRGB(params.wl);
+      // tint a little differently for extraordinary (mix green)
+      const rgbE = { r: Math.min(255, rgb.r+40), g: Math.min(255, rgb.g+20), b: rgb.b };
+      const alpha = 0.7 * I_e;
+      ctx.strokeStyle = `rgba(${rgbE.r},${rgbE.g},${rgbE.b},${alpha})`;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(traceE.pExit.x, traceE.pExit.y);
+      ctx.lineTo(traceE.pExit.x + traceE.outDir.x*800, traceE.pExit.y + traceE.outDir.y*800);
+      ctx.stroke();
+
+      // inside path dashed
+      ctx.setLineDash([6,6]);
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx.beginPath();
+      ctx.moveTo(traceE.pEnter.x, traceE.pEnter.y);
+      ctx.lineTo(traceE.pExit.x, traceE.pExit.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else if (traceE.entered && traceE.tir) {
+      ctx.fillStyle = 'rgba(255,160,100,0.06)';
+      ctx.beginPath();
+      ctx.arc(traceE.pEnter.x, traceE.pEnter.y, 24, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // mark entry points
+    if (traceO.entered && traceO.pEnter) {
+      ctx.fillStyle = 'rgba(180,220,255,0.85)';
+      ctx.beginPath();
+      ctx.arc(traceO.pEnter.x, traceO.pEnter.y, 4, 0, Math.PI*2);
+      ctx.fill();
+    }
+    if (traceE.entered && traceE.pEnter) {
+      ctx.fillStyle = 'rgba(200,255,220,0.85)';
+      ctx.beginPath();
+      ctx.arc(traceE.pEnter.x, traceE.pEnter.y, 4, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+
+  // draw legend / intensities
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  ctx.fillRect(12, canvas.height-86, 260, 70);
+  ctx.fillStyle = '#bfe8ff';
+  ctx.font = '13px Inter, Arial';
+  const rgb = wavelengthToRGB(params.wl);
+  ctx.fillText(`Wavelength: ${params.wl} nm`, 20, canvas.height-60);
+  ctx.fillText(`I_o (ordinary) ∝ cos²(φ) = ${(Math.cos(params.polDeg*Math.PI/180)**2).toFixed(2)}`, 20, canvas.height-40);
+  ctx.fillText(`I_e (extraordinary) ∝ sin²(φ) = ${(Math.sin(params.polDeg*Math.PI/180)**2).toFixed(2)}`, 20, canvas.height-20);
+
+  // small markers for prism faces normals (visual)
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  ctx.font = '11px Inter, Arial';
+  ctx.fillText('Prism', geom.centerX-14, geom.centerY-params.apexDeg*0.15);
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+</script>
+</body>
+</html>
